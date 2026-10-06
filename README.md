@@ -52,6 +52,55 @@ Designed for high data consistency, financial safety, and zero overselling using
 
 ---
 
+## End-to-End Request Flow & Token Lifecycle
+
+### 1. Macro Request Pipeline
+Every request entering the application follows an explicit 7-stage pipeline:
+
+```
+[Client / Web / Mobile] 
+      │ 1. Sends HTTP Request with `Authorization: Bearer 1|xyz...`
+      ▼
+[public/index.php] ───────> Boots Composer autoloader & Laravel Engine
+      ▼
+[bootstrap/app.php] ──────> Configures middleware pipeline and aliases
+      ▼
+[routes/api.php] ─────────> Matches URL path (`/api/v1/orders/checkout`)
+      ▼
+[auth:sanctum] ───────────> Hashes token secret, verifies against `personal_access_tokens` table
+      ▼
+[EnsureUserHasRole] ──────> Enforces RBAC permissions (`customer` vs `vendor` vs `admin`)
+      ▼
+[FormRequest] ────────────> Validates input data types, inventory existence, min bounds
+      ▼
+[Controller] ─────────────> Orchestrates request, delegates to Domain Service
+      ▼
+[Domain Service] ─────────> Runs `DB::transaction()`, acquires `lockForUpdate()`, writes DB
+      ▼
+[JsonResource] ───────────> Formats output JSON, masks internal DB columns
+      ▼
+[Client Response] ────────> Returns HTTP JSON response (201 Created / 200 OK)
+```
+
+### 2. How Authentication & Tokens Work Under the Hood
+* **Login / Register:**
+  * When a user logs in, `AuthController` calls `$user->createToken('auth_token', ['role:customer'])->plainTextToken`.
+  * Laravel generates a 40-character random string, hashes it with SHA-256, and saves the hash in the `personal_access_tokens` table.
+  * It returns `"1|plainSecretKey"` to the client.
+* **Client Storage:**
+  * Client stores this token in `localStorage` (React) or encrypted secure storage (Mobile).
+* **Transmission:**
+  * Client sends header with every protected call: `Authorization: Bearer 1|plainSecretKey`.
+* **Server Verification:**
+  * Sanctum extracts ID `1`, hashes `plainSecretKey` with SHA-256, and executes:
+    `SELECT * FROM personal_access_tokens WHERE id = 1 AND token = <hash> LIMIT 1;`
+  * If valid, loads User record and attaches to `$request->user()`.
+  * If invalid or expired, immediately halts with `401 Unauthorized`.
+* **Instant Revocation (Logout):**
+  * Calling `$request->user()->currentAccessToken()->delete()` deletes the row from MySQL, instantly invalidating the token on all devices.
+
+---
+
 ## Tech Stack (Zero Docker Setup)
 
 * **Backend Framework:** Laravel 11.x
